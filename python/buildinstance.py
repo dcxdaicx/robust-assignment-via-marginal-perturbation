@@ -34,6 +34,28 @@ def _csv_rows(path, expected_fields):
             yield line_number, row
 
 
+def _csv_values(path, expected_fields):
+    """Yield validated positional CSV rows for high-volume pair files."""
+    with open(path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle)
+        try:
+            actual_fields = tuple(next(reader))
+        except StopIteration as exc:
+            raise ValueError(f"Missing header in {path}") from exc
+        if actual_fields != expected_fields:
+            raise ValueError(
+                f"Invalid header in {path}: expected {','.join(expected_fields)}; "
+                f"got {','.join(actual_fields) or '<missing>'}"
+            )
+        for line_number, values in enumerate(reader, start=2):
+            if len(values) != len(expected_fields):
+                raise ValueError(
+                    f"Invalid column count in {path} at line {line_number}: "
+                    f"expected {len(expected_fields)}, got {len(values)}"
+                )
+            yield line_number, values
+
+
 def _external_id(value, kind, path, line_number):
     external_id = value.strip()
     if not external_id:
@@ -260,10 +282,10 @@ class InputInstance:
                 ) from exc
         return internal_ids
 
-    def _pair_indices(self, row, path, line_number):
-        paper_external_id = _external_id(row["paper_id"], "paper", path, line_number)
+    def _pair_indices(self, paper_value, reviewer_value, path, line_number):
+        paper_external_id = _external_id(paper_value, "paper", path, line_number)
         reviewer_external_id = _external_id(
-            row["reviewer_id"], "reviewer", path, line_number
+            reviewer_value, "reviewer", path, line_number
         )
         try:
             paper = self.paper_external_to_internal[paper_external_id]
@@ -306,11 +328,18 @@ class InputInstance:
         self.matched_this_stage = [set() for _ in range(self.np)]
 
     def _load_similarity_scores(self, similarity_scores_file):
-        for line_number, row in _csv_rows(similarity_scores_file, SCORE_FIELDS):
+        for line_number, (paper_value, reviewer_value, score_value) in _csv_values(
+            similarity_scores_file, SCORE_FIELDS
+        ):
             paper, reviewer = self._pair_indices(
-                row, similarity_scores_file, line_number
+                paper_value,
+                reviewer_value,
+                similarity_scores_file,
+                line_number,
             )
-            score = _number(row["score"], "score", similarity_scores_file, line_number)
+            score = _number(
+                score_value, "score", similarity_scores_file, line_number
+            )
             if score <= 0:
                 self.nonpositive_similarity_scores_skipped += 1
                 continue
@@ -342,14 +371,21 @@ class InputInstance:
         self.biddedlist = [[] for _ in range(self.np)]
         self.bidlist = [[] for _ in range(self.nr)]
 
-        for line_number, row in _csv_rows(bid_scores_file, SCORE_FIELDS):
-            paper, reviewer = self._pair_indices(row, bid_scores_file, line_number)
+        for line_number, (paper_value, reviewer_value, score_value) in _csv_values(
+            bid_scores_file, SCORE_FIELDS
+        ):
+            paper, reviewer = self._pair_indices(
+                paper_value,
+                reviewer_value,
+                bid_scores_file,
+                line_number,
+            )
             if reviewer in self.bid_score[paper]:
                 raise ValueError(
                     f"Duplicate bid pair in {bid_scores_file} at line {line_number}: "
                     f"({self.paper_id(paper)}, {self.reviewer_id(reviewer)})"
                 )
-            score = _number(row["score"], "score", bid_scores_file, line_number)
+            score = _number(score_value, "score", bid_scores_file, line_number)
             self.bid_score[paper][reviewer] = score
             if score >= 0.0:
                 self.bid[paper].add(reviewer)
@@ -368,15 +404,24 @@ class InputInstance:
                         self.bidpaper_author[reviewer].add(author)
 
     def _load_constraints(self, constraints_file):
-        for line_number, row in _csv_rows(constraints_file, CONSTRAINT_FIELDS):
-            paper, reviewer = self._pair_indices(row, constraints_file, line_number)
+        for line_number, (
+            paper_value,
+            reviewer_value,
+            constraint_value,
+        ) in _csv_values(constraints_file, CONSTRAINT_FIELDS):
+            paper, reviewer = self._pair_indices(
+                paper_value,
+                reviewer_value,
+                constraints_file,
+                line_number,
+            )
             if reviewer in self.constraint[paper]:
                 raise ValueError(
                     f"Duplicate constraint pair in {constraints_file} at line "
                     f"{line_number}: ({self.paper_id(paper)}, {self.reviewer_id(reviewer)})"
                 )
             constraint = _integer(
-                row["constraint"], "constraint", constraints_file, line_number
+                constraint_value, "constraint", constraints_file, line_number
             )
             if constraint not in (-1, 1):
                 raise ValueError(
