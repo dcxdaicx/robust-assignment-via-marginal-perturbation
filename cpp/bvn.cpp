@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr int kProbabilityScale = 10'000'000;
+constexpr int kProbabilityScale = 10000000;
 
 struct Edge {
     int from = 0;
