@@ -457,7 +457,13 @@ class InputInstance:
     def external_matching_pairs(self, matching_pairs):
         return [
             [self.paper_id(paper), self.reviewer_id(reviewer)]
-            for paper, reviewer in matching_pairs
+            for paper, reviewer in sorted(
+                matching_pairs,
+                key=lambda pair: (
+                    self.paper_id(pair[0]),
+                    self.reviewer_id(pair[1]),
+                ),
+            )
         ]
 
     def external_probability_pairs(self, probability_pairs):
