@@ -1,6 +1,7 @@
 import logging
 import subprocess
 from collections import defaultdict
+from math import floor, isfinite
 from pathlib import Path
 
 from . import algorithms
@@ -9,6 +10,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CPP_BINARY_DIR = PROJECT_ROOT / "build" / "bin"
 EPSILON = 1e-8
+PROBABILITY_SCALE = 10000000
 
 
 def _solve_fractional_assignment(
@@ -79,38 +81,160 @@ def _probability_matrix(instance, solver_assignment):
     return solver_assignment
 
 
-def _round_paper_probabilities(instance, probability_matrix):
-    """Round edge weights for the C++ sampler while preserving each paper sum."""
-    nonzero_papers_for_reviewer = [[] for _ in range(instance.nr)]
+def _round_paper_probabilities(
+    instance, probability_matrix, maxprob=1.0, dynamic_maxprob=None
+):
+    """Quantize probabilities while preserving edge, paper, and reviewer bounds."""
+    fixed_reviewer_loads = [0] * instance.nr
+    for constraints in instance.constraint:
+        for reviewer, constraint in constraints.items():
+            if constraint == 1:
+                fixed_reviewer_loads[reviewer] += 1
+
+    reviewer_unit_capacities = [
+        (instance.ellr[reviewer] - fixed_reviewer_loads[reviewer])
+        * PROBABILITY_SCALE
+        for reviewer in range(instance.nr)
+    ]
+    reviewer_base_units = [0] * instance.nr
+    base_units_by_paper = []
+    increment_candidates = []
+    paper_deficits = []
+
     for paper in range(instance.np):
-        nonzero_reviewers = []
+        base_units = {}
+        candidates = []
+        probability_sum = 0.0
         for reviewer, probability in probability_matrix[paper].items():
-            probability_matrix[paper][reviewer] = round(probability, 7)
-            nonzero_reviewers.append(reviewer)
+            if not isfinite(probability) or probability < 0:
+                raise RuntimeError(
+                    f"Invalid fractional probability at ({paper}, {reviewer}): "
+                    f"{probability}"
+                )
+            probability_sum += probability
+            scaled = probability * PROBABILITY_SCALE
+            edge_cap = algorithms._assignment_upper_bound(
+                instance,
+                paper,
+                reviewer,
+                maxprob,
+                dynamic_maxprob,
+            )
+            maximum_units = round(edge_cap * PROBABILITY_SCALE)
+            if scaled > maximum_units + EPSILON * PROBABILITY_SCALE:
+                raise RuntimeError(
+                    "Fractional solution exceeds an assignment-probability cap: "
+                    f"paper={instance.paper_id(paper)}, "
+                    f"reviewer={instance.reviewer_id(reviewer)}, "
+                    f"probability={probability}, cap={edge_cap}"
+                )
+            floored_units = floor(scaled)
+            units = min(floored_units, maximum_units)
+            base_units[reviewer] = units
+            reviewer_base_units[reviewer] += units
+            fractional_part = scaled - floored_units
+            if fractional_part > 1e-9 and units < maximum_units:
+                candidates.append((reviewer, fractional_part))
 
-        total = sum(
-            probability_matrix[paper][reviewer] for reviewer in nonzero_reviewers
+        expected_paper_load = round(probability_sum)
+        if abs(probability_sum - expected_paper_load) > 1e-5:
+            raise RuntimeError(
+                "Fractional solution does not have an integral paper sum: "
+                f"paper={instance.paper_id(paper)}, total={probability_sum}"
+            )
+        deficit = expected_paper_load * PROBABILITY_SCALE - sum(base_units.values())
+        if deficit < 0 or deficit > len(candidates):
+            raise RuntimeError(
+                "Unable to quantize a paper row within its edge bounds: "
+                f"paper={instance.paper_id(paper)}, deficit={deficit}, "
+                f"roundable_edges={len(candidates)}"
+            )
+        candidates.sort(key=lambda item: (-item[1], item[0]))
+        base_units_by_paper.append(base_units)
+        increment_candidates.append([reviewer for reviewer, _ in candidates])
+        paper_deficits.append(deficit)
+
+    reviewer_increment_capacities = [
+        capacity - base
+        for capacity, base in zip(reviewer_unit_capacities, reviewer_base_units)
+    ]
+    overloaded = [
+        reviewer
+        for reviewer, capacity in enumerate(reviewer_increment_capacities)
+        if capacity < 0
+    ]
+    if overloaded:
+        reviewer = overloaded[0]
+        raise RuntimeError(
+            "Fractional solution exceeds reviewer capacity before quantization: "
+            f"reviewer={instance.reviewer_id(reviewer)}"
         )
-        difference = round(total) - total
-        if abs(difference) > EPSILON:
-            for reviewer in nonzero_reviewers:
-                current = probability_matrix[paper][reviewer]
-                if difference > 0:
-                    adjustment = min(difference, 1.0 - current)
-                else:
-                    adjustment = -min(-difference, current)
-                probability_matrix[paper][reviewer] += adjustment
-                difference -= adjustment
-                if abs(difference) <= EPSILON:
-                    break
 
-        for reviewer in nonzero_reviewers:
-            if probability_matrix[paper][reviewer] > EPSILON:
+    selected_by_paper = [set() for _ in range(instance.np)]
+    selected_papers_by_reviewer = [set() for _ in range(instance.nr)]
+    reviewer_increment_counts = [0] * instance.nr
+
+    def select(paper, reviewer):
+        selected_by_paper[paper].add(reviewer)
+        selected_papers_by_reviewer[reviewer].add(paper)
+        reviewer_increment_counts[reviewer] += 1
+
+    def deselect(paper, reviewer):
+        selected_by_paper[paper].remove(reviewer)
+        selected_papers_by_reviewer[reviewer].remove(paper)
+        reviewer_increment_counts[reviewer] -= 1
+
+    def augment(paper, seen_papers, seen_reviewers):
+        for reviewer in increment_candidates[paper]:
+            if reviewer in selected_by_paper[paper] or reviewer in seen_reviewers:
+                continue
+            seen_reviewers.add(reviewer)
+            if (
+                reviewer_increment_counts[reviewer]
+                < reviewer_increment_capacities[reviewer]
+            ):
+                select(paper, reviewer)
+                return True
+            for other_paper in tuple(selected_papers_by_reviewer[reviewer]):
+                if other_paper in seen_papers:
+                    continue
+                seen_papers.add(other_paper)
+                if augment(other_paper, seen_papers, seen_reviewers):
+                    deselect(other_paper, reviewer)
+                    select(paper, reviewer)
+                    return True
+        return False
+
+    paper_order = sorted(
+        range(instance.np),
+        key=lambda paper: (
+            len(increment_candidates[paper]) - paper_deficits[paper],
+            len(increment_candidates[paper]),
+        ),
+    )
+    for paper in paper_order:
+        for _ in range(paper_deficits[paper]):
+            if not augment(paper, {paper}, set()):
+                raise RuntimeError(
+                    "Unable to preserve reviewer capacities while quantizing "
+                    f"paper={instance.paper_id(paper)}"
+                )
+
+    nonzero_papers_for_reviewer = [[] for _ in range(instance.nr)]
+    for paper, base_units in enumerate(base_units_by_paper):
+        quantized = defaultdict(float)
+        for reviewer, units in base_units.items():
+            units += reviewer in selected_by_paper[paper]
+            if units:
+                quantized[reviewer] = units / PROBABILITY_SCALE
                 nonzero_papers_for_reviewer[reviewer].append(paper)
+        probability_matrix[paper] = quantized
     return nonzero_papers_for_reviewer
 
 
-def _sampler_input(instance, probability_matrix):
+def _sampler_input(
+    instance, probability_matrix, maxprob=1.0, dynamic_maxprob=None
+):
     lines = [f"{instance.nr} {instance.np}"]
     lines.extend(
         f"{instance.region[reviewer]} 1" for reviewer in range(instance.nr)
@@ -129,7 +253,7 @@ def _sampler_input(instance, probability_matrix):
     )
 
     nonzero_papers_for_reviewer = _round_paper_probabilities(
-        instance, probability_matrix
+        instance, probability_matrix, maxprob, dynamic_maxprob
     )
     for reviewer, papers in enumerate(nonzero_papers_for_reviewer):
         lines.extend(
@@ -140,7 +264,13 @@ def _sampler_input(instance, probability_matrix):
     return "\n".join(lines) + "\n"
 
 
-def _sample_matching(instance, optimize_sampling, probability_matrix):
+def _sample_matching(
+    instance,
+    optimize_sampling,
+    probability_matrix,
+    maxprob=1.0,
+    dynamic_maxprob=None,
+):
     binary_path = CPP_BINARY_DIR / "bvn"
     if not binary_path.is_file():
         raise RuntimeError(
@@ -152,7 +282,9 @@ def _sample_matching(instance, optimize_sampling, probability_matrix):
         command.append("--optimize-sampling")
     result = subprocess.run(
         command,
-        input=_sampler_input(instance, probability_matrix),
+        input=_sampler_input(
+            instance, probability_matrix, maxprob, dynamic_maxprob
+        ),
         text=True,
         capture_output=True,
         check=False,
@@ -279,7 +411,13 @@ def solve(
         reviewer_pool,
     )
     probability_matrix = _probability_matrix(instance, solver_assignment)
-    matching_pairs = _sample_matching(instance, optimize_sampling, probability_matrix)
+    matching_pairs = _sample_matching(
+        instance,
+        optimize_sampling,
+        probability_matrix,
+        maxprob,
+        dynamic_maxprob,
+    )
 
     probability_pairs = []
     for paper in range(instance.np):
