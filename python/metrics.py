@@ -44,11 +44,12 @@ def supportsize(instance, probability_matrix):
 
 
 def entropy(instance, probability_matrix):
-    return -sum(
+    value = -sum(
         probability * log(probability)
         for probability in _candidate_probabilities(instance, probability_matrix)
         if probability > EPSILON
     )
+    return 0.0 if value == 0 else value
 
 
 def l2normloss(instance, probability_matrix):
