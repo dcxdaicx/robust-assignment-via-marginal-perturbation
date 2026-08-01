@@ -65,12 +65,18 @@ def _solve_fractional_assignment(
 
 
 def _probability_matrix(instance, solver_assignment):
-    probability_matrix = [defaultdict(float) for _ in range(instance.np)]
+    """Discard zero and fixed entries without duplicating the dense solution."""
     for paper in range(instance.np):
-        for reviewer in instance.remained_r_for_p[paper]:
-            if instance.constraint_for(paper, reviewer) == 0:
-                probability_matrix[paper][reviewer] = solver_assignment[paper][reviewer]
-    return probability_matrix
+        solver_assignment[paper] = defaultdict(
+            float,
+            (
+                (reviewer, probability)
+                for reviewer, probability in solver_assignment[paper].items()
+                if instance.constraint_for(paper, reviewer) == 0
+                and probability > EPSILON
+            ),
+        )
+    return solver_assignment
 
 
 def _round_paper_probabilities(instance, probability_matrix):
@@ -78,10 +84,7 @@ def _round_paper_probabilities(instance, probability_matrix):
     nonzero_papers_for_reviewer = [[] for _ in range(instance.nr)]
     for paper in range(instance.np):
         nonzero_reviewers = []
-        for reviewer in instance.remained_r_for_p[paper]:
-            probability = probability_matrix[paper][reviewer]
-            if probability <= EPSILON:
-                continue
+        for reviewer, probability in probability_matrix[paper].items():
             probability_matrix[paper][reviewer] = round(probability, 7)
             nonzero_reviewers.append(reviewer)
 
@@ -114,10 +117,10 @@ def _sampler_input(instance, probability_matrix):
     )
     coauthor_pairs = sorted(
         {
-            (reviewer, coauthor)
+            tuple(sorted((reviewer, coauthor)))
             for reviewer, coauthors in enumerate(instance.coauthorlist)
             for coauthor in coauthors
-            if reviewer < coauthor
+            if reviewer != coauthor
         }
     )
     lines.append(str(len(coauthor_pairs)))
@@ -177,7 +180,79 @@ def _sample_matching(instance, optimize_sampling, probability_matrix):
                 f"Out-of-range pair from C++ sampler at line {line_number}: {line!r}"
             )
         matching_pairs.append([paper, reviewer])
+    _validate_matching(instance, probability_matrix, matching_pairs)
     return matching_pairs
+
+
+def _validate_matching(instance, probability_matrix, matching_pairs):
+    """Reject sampler output that violates any hard assignment constraint."""
+    expected_paper_loads = [
+        round(sum(probabilities.values())) for probabilities in probability_matrix
+    ]
+    paper_loads = [0] * instance.np
+    reviewer_loads = [0] * instance.nr
+    fixed_reviewer_loads = [0] * instance.nr
+    seen = set()
+
+    for paper, constraints in enumerate(instance.constraint):
+        for reviewer, constraint in constraints.items():
+            if constraint == 1:
+                fixed_reviewer_loads[reviewer] += 1
+
+    for paper, reviewer in matching_pairs:
+        pair = (paper, reviewer)
+        if pair in seen:
+            raise RuntimeError(
+                "C++ sampler returned duplicate assignment: "
+                f"paper={instance.paper_id(paper)}, "
+                f"reviewer={instance.reviewer_id(reviewer)}"
+            )
+        seen.add(pair)
+        if reviewer not in probability_matrix[paper]:
+            raise RuntimeError(
+                "C++ sampler returned an edge outside the fractional support: "
+                f"paper={instance.paper_id(paper)}, "
+                f"reviewer={instance.reviewer_id(reviewer)}"
+            )
+        if instance.constraint_for(paper, reviewer) != 0:
+            raise RuntimeError(
+                "C++ sampler returned a fixed or forbidden edge: "
+                f"paper={instance.paper_id(paper)}, "
+                f"reviewer={instance.reviewer_id(reviewer)}"
+            )
+        paper_loads[paper] += 1
+        reviewer_loads[reviewer] += 1
+
+    bad_papers = [
+        paper
+        for paper, (actual, expected) in enumerate(
+            zip(paper_loads, expected_paper_loads)
+        )
+        if actual != expected
+    ]
+    if bad_papers:
+        paper = bad_papers[0]
+        raise RuntimeError(
+            "C++ sampler violated paper demand: "
+            f"paper={instance.paper_id(paper)}, actual={paper_loads[paper]}, "
+            f"expected={expected_paper_loads[paper]}"
+        )
+
+    overloaded = [
+        reviewer
+        for reviewer in range(instance.nr)
+        if reviewer_loads[reviewer] + fixed_reviewer_loads[reviewer]
+        > instance.ellr[reviewer]
+    ]
+    if overloaded:
+        reviewer = overloaded[0]
+        raise RuntimeError(
+            "C++ sampler violated reviewer capacity: "
+            f"reviewer={instance.reviewer_id(reviewer)}, "
+            f"sampled={reviewer_loads[reviewer]}, "
+            f"fixed={fixed_reviewer_loads[reviewer]}, "
+            f"capacity={instance.ellr[reviewer]}"
+        )
 
 
 def solve(
@@ -208,13 +283,10 @@ def solve(
 
     probability_pairs = []
     for paper in range(instance.np):
-        for reviewer in instance.remained_r_for_p[paper]:
-            if (
-                instance.constraint_for(paper, reviewer) == 0
-                and probability_matrix[paper][reviewer] > EPSILON
-            ):
+        for reviewer, probability in probability_matrix[paper].items():
+            if probability > EPSILON:
                 probability_pairs.append(
-                    [paper, reviewer, probability_matrix[paper][reviewer]]
+                    [paper, reviewer, probability]
                 )
 
     logger.info(

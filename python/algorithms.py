@@ -50,15 +50,13 @@ def _add_assignment_and_load_constraints(
 ):
     # Keep the assignment and load constraints aligned across all algorithms.
     for p in range(instance.np):
-        assigned = 0
-        for r in instance.remained_r_for_p[p]:
-            assigned += assignment[p][r]
+        assigned = sum(assignment[p].values())
         solver.addConstr(assigned == ellp[p])
 
     for r in range(instance.nr):
         load = 0
         for p in instance.remained_p_for_r[r]:
-            load += assignment[p][r]
+            load += assignment[p].get(r, 0.0)
         solver.addConstr(load <= instance.ellr[r])
         if _reviewer_is_eligible(instance, r, reviewer_pool):
             solver.addConstr(load >= instance.min_ellr[r])
@@ -96,8 +94,7 @@ def _optimize_and_extract(
     logger.info("%s optimization objective: %.6f", algorithm_name, solver.ObjVal)
 
     for p in range(instance.np):
-        for r in instance.remained_r_for_p[p]:
-            value = assignment[p][r]
+        for r, value in assignment[p].items():
             assignment[p][r] = value.X if isinstance(value, gp.Var) else value
         _log_paper_progress(
             f"Extracting {algorithm_name} solution", p, instance.np
@@ -258,8 +255,12 @@ def ramp(
         _log_paper_progress("Building RAMP variables", p, instance.np)
     objective = 0
 
+    # Region diversity and within-paper coauthorship are constant when a paper
+    # receives at most one reviewer in this stage.
+    has_reviewer_pairs = any(load > 1 for load in ellp)
+
     # Set region reward
-    if reward_region > 0:
+    if reward_region > 0 and has_reviewer_pairs:
         logger.info("Adding RAMP region-diversity terms")
         for p in range(instance.np):
             reg_sum = defaultdict(float)
@@ -273,11 +274,16 @@ def ramp(
                 solver.addConstr(reg_var <= value)
                 objective -= obj_scalar * reward_region * reg_var
             _log_paper_progress("Adding RAMP region terms", p, instance.np)
-    else:
+    elif reward_region <= 0:
         logger.info("Skipping RAMP region-diversity terms (reward_region=0)")
+    else:
+        logger.info(
+            "Skipping RAMP region-diversity terms "
+            "(at most one reviewer per paper in this stage)"
+        )
 
     # Set coauthor penalty
-    if pen_coauthor > 0:
+    if pen_coauthor > 0 and has_reviewer_pairs:
         logger.info("Adding RAMP coauthor terms")
         for r in range(instance.nr):
             neighboring_reviewers = instance.coauthorlist[r].copy()
@@ -291,8 +297,13 @@ def ramp(
                 coauthor_var = solver.addVar(lb=1)
                 solver.addConstr(coauthor_var >= coauthor_sum)
                 objective += obj_scalar * pen_coauthor * coauthor_var
-    else:
+    elif pen_coauthor <= 0:
         logger.info("Skipping RAMP coauthor terms (pen_coauthor=0)")
+    else:
+        logger.info(
+            "Skipping RAMP coauthor terms "
+            "(at most one reviewer per paper in this stage)"
+        )
 
     # Set linear objective
     # Gurobi needs to first set linear objectives, then set piecewise-linear objectives
@@ -362,8 +373,8 @@ def ramp(
     logger.info("Adding RAMP piecewise-linear assignment objectives")
     assignment_grids = {}
     for p in range(instance.np):
-        for r in instance.remained_r_for_p[p]:
-            if isinstance(assignment[p][r], gp.Var):
+        for r, variable in assignment[p].items():
+            if isinstance(variable, gp.Var):
                 upper_bound = _assignment_upper_bound(
                     instance, p, r, maxprob, dynamic_maxprob
                 )
@@ -377,7 +388,7 @@ def ramp(
                 xpts, shape = assignment_grids[upper_bound]
                 val = instance.s[p][r]
                 ypts = [value * val for value in shape]
-                solver.setPWLObj(assignment[p][r], xpts, ypts)
+                solver.setPWLObj(variable, xpts, ypts)
         _log_paper_progress("Adding RAMP PWL objectives", p, instance.np)
 
     logger.info("Adding RAMP paper and reviewer load constraints")
