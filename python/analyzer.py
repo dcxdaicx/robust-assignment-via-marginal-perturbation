@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import redirect_stdout
 import logging
 from pathlib import Path
@@ -29,41 +29,49 @@ def _coauthor_pair_counts(instance, matching_reviewers_by_paper):
     return distance_one, distance_two
 
 
-def _strong_twocycle_count(instance, matching_reviewers_by_paper):
-    """Count reciprocal positive-bid assignments using only matched edges.
-
-    A directed count (r1, r2) records how many papers authored by r2 were both
-    positively bid on by and assigned to r1.  Multiplying reciprocal directed
-    counts gives exactly the number of strong two-cycle paper pairs.
-    """
-    assigned_bid_author_counts = Counter()
+def _assignment_author_edges(
+    instance, matching_reviewers_by_paper, require_positive_bid
+):
+    """Build the reviewer-to-author multigraph induced by a matching."""
+    edge_counts = Counter()
     for paper, assigned_reviewers in enumerate(matching_reviewers_by_paper):
         if not assigned_reviewers or not instance.authorlist[paper]:
             continue
-        positive_bidders = instance.bid[paper]
         for reviewer in assigned_reviewers:
-            if reviewer not in positive_bidders:
+            if require_positive_bid and reviewer not in instance.bid[paper]:
                 continue
             for author in instance.authorlist[paper]:
                 if author != reviewer:
-                    assigned_bid_author_counts[reviewer, author] += 1
+                    edge_counts[reviewer, author] += 1
+    return edge_counts
 
-    violations = 0
-    violating_reviewer_pairs = 0
-    for (first, second), forward_count in assigned_bid_author_counts.items():
-        if first >= second:
-            continue
-        reverse_count = assigned_bid_author_counts.get((second, first), 0)
-        if reverse_count:
-            violations += forward_count * reverse_count
-            violating_reviewer_pairs += 1
-    if violations:
-        logger.warning(
-            "Found %d strong 2-cycle violations across %d reviewer pairs",
-            violations,
-            violating_reviewer_pairs,
-        )
-    return violations
+
+def _cycle_counts(edge_counts):
+    """Count directed 2- and 3-cycles, including edge multiplicities."""
+    two_cycles = 0
+    outgoing = defaultdict(dict)
+    for (first, second), count in edge_counts.items():
+        outgoing[first][second] = count
+        if first < second:
+            two_cycles += count * edge_counts.get((second, first), 0)
+
+    three_cycles = 0
+    for first, first_neighbors in outgoing.items():
+        for second, first_second_count in first_neighbors.items():
+            if second == first:
+                continue
+            for third, second_third_count in outgoing.get(second, {}).items():
+                if third == first or third == second:
+                    continue
+                # The smallest reviewer ID anchors each directed cycle, removing
+                # its three rotational duplicates while preserving orientation.
+                if first > second or first > third:
+                    continue
+                third_first_count = edge_counts.get((third, first), 0)
+                three_cycles += (
+                    first_second_count * second_third_count * third_first_count
+                )
+    return two_cycles, three_cycles
 
 
 def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
@@ -125,8 +133,26 @@ def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
         statistics.coauthor_dist_1_pairs_num,
         statistics.coauthor_dist_2_pairs_num,
     ) = _coauthor_pair_counts(instance, final_matching_r_for_p)
-    statistics.strong_twocycle_violations_1 = _strong_twocycle_count(
-        instance, final_matching_r_for_p
+    weak_cycle_edges = _assignment_author_edges(
+        instance, final_matching_r_for_p, require_positive_bid=False
+    )
+    strong_cycle_edges = _assignment_author_edges(
+        instance, final_matching_r_for_p, require_positive_bid=True
+    )
+    (
+        statistics.weak_twocycle_violations,
+        statistics.weak_threecycle_violations,
+    ) = _cycle_counts(weak_cycle_edges)
+    (
+        statistics.strong_twocycle_violations,
+        statistics.strong_threecycle_violations,
+    ) = _cycle_counts(strong_cycle_edges)
+    logger.info(
+        "Assignment cycles: weak-2=%d, strong-2=%d, weak-3=%d, strong-3=%d",
+        statistics.weak_twocycle_violations,
+        statistics.strong_twocycle_violations,
+        statistics.weak_threecycle_violations,
+        statistics.strong_threecycle_violations,
     )
 
     reviewer_loads = [0 for _ in range(instance.nr)]
@@ -201,8 +227,12 @@ def output_statistics(instance, statistics, output_dir, algo_name):
             )
             print("coauthor_dist_1_pairs:", statistics.coauthor_dist_1_pairs_num)
             print("coauthor_dist_2_pairs:", statistics.coauthor_dist_2_pairs_num)
+            print("weak_twocycle_violations:", statistics.weak_twocycle_violations)
+            print("strong_twocycle_violations:", statistics.strong_twocycle_violations)
+            print("weak_threecycle_violations:", statistics.weak_threecycle_violations)
             print(
-                "strong_twocycle_violations:", statistics.strong_twocycle_violations_1
+                "strong_threecycle_violations:",
+                statistics.strong_threecycle_violations,
             )
             print("load distribution:", statistics.load_distribution)
 
