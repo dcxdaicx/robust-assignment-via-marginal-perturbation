@@ -5,6 +5,7 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 PROGRESS_PAPER_INTERVAL = 5_000
+PWL_STEP = 0.1
 
 
 def _log_paper_progress(stage, paper, total_papers):
@@ -16,6 +17,15 @@ def _log_paper_progress(stage, paper, total_papers):
             f"{completed:,}",
             f"{total_papers:,}",
         )
+
+
+def _pwl_grid(upper_bound):
+    """Return a stable PWL grid that includes the exact upper bound."""
+    step_count = int(upper_bound / PWL_STEP + 1e-9)
+    points = [round(step * PWL_STEP, 10) for step in range(step_count + 1)]
+    if points[-1] < upper_bound - 1e-9:
+        points.append(float(upper_bound))
+    return points
 
 
 def _add_assignment_and_load_constraints(
@@ -35,8 +45,6 @@ def _add_assignment_and_load_constraints(
         load = 0
         for p in instance.remained_p_for_r[r]:
             load += assignment[p][r]
-        if instance.zero_capacity_reviewer_mask[r]:
-            continue
         solver.addConstr(load <= instance.ellr[r])
         if not senior_only or instance.seniority[r] >= 1:
             solver.addConstr(load >= instance.min_ellr[r])
@@ -257,7 +265,7 @@ def ramp(
             coauthor_var = solver.addVar(lb=1)
             coauthor_sum = 0
             for r2 in neighboring_reviewers:
-                coauthor_sum += assignment[p][r2]
+                coauthor_sum += assignment[p].get(r2, 0.0)
             solver.addConstr(coauthor_var >= coauthor_sum)
             objective += obj_scalar * pen_coauthor * coauthor_var
 
@@ -267,6 +275,22 @@ def ramp(
 
     # Set 2cycle penalty
     logger.info("Adding RAMP strong 2-cycle terms")
+    cycle_grids = {}
+
+    def cycle_assignment(paper, reviewer):
+        value = assignment[paper].get(reviewer, 0.0)
+        if isinstance(value, gp.Var):
+            upper_bound = _assignment_upper_bound(
+                instance,
+                paper,
+                reviewer,
+                maxprob,
+                dynamic_maxprob,
+            )
+        else:
+            upper_bound = float(value)
+        return value, upper_bound
+
     for r1 in range(instance.nr):
         for r2 in instance.bidpaper_authorlist[r1]:
             if r2 > r1 and r1 in instance.bidpaper_author[r2]:
@@ -278,32 +302,53 @@ def ramp(
                                 and instance.constraint_for(p1, r2) == 1
                             ):
                                 continue
-                            sum_2cycle = solver.addVar(lb=0, ub=1)
-                            solver.addConstr(
-                                sum_2cycle >= assignment[p2][r1] + assignment[p1][r2]
+                            first_assignment, first_upper_bound = cycle_assignment(
+                                p2, r1
                             )
-                            xpts = []
-                            ypts = []
-                            now = 0
-                            while now <= 1:
-                                xpts.append(now)
-                                ypts.append(obj_scalar * pen_2cycle * now * now)
-                                now += 0.1
+                            second_assignment, second_upper_bound = cycle_assignment(
+                                p1, r2
+                            )
+                            cycle_upper_bound = (
+                                first_upper_bound + second_upper_bound
+                            )
+                            if cycle_upper_bound == 0:
+                                continue
+                            sum_2cycle = solver.addVar(
+                                lb=0, ub=cycle_upper_bound
+                            )
+                            solver.addConstr(
+                                sum_2cycle
+                                >= first_assignment + second_assignment
+                            )
+                            if cycle_upper_bound not in cycle_grids:
+                                xpts = _pwl_grid(cycle_upper_bound)
+                                ypts = [
+                                    obj_scalar * pen_2cycle * point * point
+                                    for point in xpts
+                                ]
+                                cycle_grids[cycle_upper_bound] = (xpts, ypts)
+                            xpts, ypts = cycle_grids[cycle_upper_bound]
                             solver.setPWLObj(sum_2cycle, xpts, ypts)
 
     # Add piecewise-linear objectives
     logger.info("Adding RAMP piecewise-linear assignment objectives")
+    assignment_grids = {}
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
             if isinstance(assignment[p][r], gp.Var):
-                xpts = []
-                ypts = []
-                now = 0
+                upper_bound = _assignment_upper_bound(
+                    instance, p, r, maxprob, dynamic_maxprob
+                )
+                if upper_bound not in assignment_grids:
+                    xpts = _pwl_grid(upper_bound)
+                    shape = [
+                        obj_scalar * (-point + beta * point * point)
+                        for point in xpts
+                    ]
+                    assignment_grids[upper_bound] = (xpts, shape)
+                xpts, shape = assignment_grids[upper_bound]
                 val = max(1e-3, instance.s[p][r])
-                while now <= maxprob + (1e-6):
-                    xpts.append(now)
-                    ypts.append(obj_scalar * (-now + beta * now * now) * val)
-                    now += 0.1
+                ypts = [value * val for value in shape]
                 solver.setPWLObj(assignment[p][r], xpts, ypts)
         _log_paper_progress("Adding RAMP PWL objectives", p, instance.np)
 

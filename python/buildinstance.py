@@ -387,7 +387,7 @@ class InputInstance:
                 )
             score = _number(score_value, "score", bid_scores_file, line_number)
             self.bid_score[paper][reviewer] = score
-            if score >= 0.0:
+            if score > 0.0:
                 self.bid[paper].add(reviewer)
                 self.biddedlist[paper].append(reviewer)
                 self.bidlist[reviewer].append(paper)
