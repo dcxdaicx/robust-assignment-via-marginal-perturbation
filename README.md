@@ -35,12 +35,12 @@ make
 Run the included synthetic instance:
 
 ```bash
-python3 runner.py --config configs/runner_config.yaml
+python3 runner.py --config configs/sample_config.yaml
 ```
 
 The sample has 20 papers, 30 reviewers, and 200 candidate edges. A successful
 run writes a 60-assignment matching to
-`results/sample/exp1/matching_files/matching_pairs.csv`. Sampling is randomized,
+`results/sample/ramp/matching_files/matching_pairs.csv`. Sampling is randomized,
 so the selected pairs may differ between runs.
 
 The sample is a small executable example, not the dataset used for every table
@@ -69,11 +69,7 @@ documents a complete RAMP run.
 
 | Field | Description |
 | --- | --- |
-| `paper_info` | Path to `paper_info.csv` |
-| `reviewer_info` | Path to `reviewer_info.csv` |
-| `similarity_scores` | Path to `similarity_scores.csv` |
-| `bid_scores` | Path to `bid_scores.csv` |
-| `constraints` | Path to `constraints.csv` |
+| `dataset_dir` | Directory containing the five input CSV files with their standard names |
 | `output_dir` | Directory in which results are written |
 | `algo_name` | `RAMP`, `Perturbed_Maximization`, `Randomized`, or `Default` |
 | `2stage` | Whether to assign senior reviewers in a separate first stage |
@@ -94,6 +90,10 @@ assigned in one optimization.
 Every CSV file must include exactly the header shown below. Paper and reviewer
 IDs are arbitrary non-empty strings; the loader maps them to compact internal
 indices and restores the original IDs in all outputs.
+
+The directory configured by `dataset_dir` must contain `paper_info.csv`,
+`reviewer_info.csv`, `similarity_scores.csv`, `bid_scores.csv`, and
+`constraints.csv`.
 
 `paper_info.csv`:
 

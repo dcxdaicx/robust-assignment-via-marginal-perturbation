@@ -14,12 +14,12 @@ LOGGER = logging.getLogger("matcher")
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 ALGORITHMS = {"RAMP", "Perturbed_Maximization", "Randomized", "Default"}
 MATCHING_FILES_DIRNAME = "matching_files"
-INPUT_FILE_KEYS = (
-    "paper_info",
-    "reviewer_info",
-    "similarity_scores",
-    "bid_scores",
-    "constraints",
+INPUT_FILENAMES = (
+    "paper_info.csv",
+    "reviewer_info.csv",
+    "similarity_scores.csv",
+    "bid_scores.csv",
+    "constraints.csv",
 )
 
 
@@ -59,14 +59,18 @@ def validate_config(config):
     if not isinstance(config, dict):
         raise ValueError("The config root must be a YAML mapping")
 
-    required_keys = (*INPUT_FILE_KEYS, "output_dir", "algo_name", "2stage")
+    required_keys = ("dataset_dir", "output_dir", "algo_name", "2stage")
     missing_keys = [key for key in required_keys if key not in config]
     if missing_keys:
         raise ValueError(f"Missing required config keys: {', '.join(missing_keys)}")
 
-    for file_key in INPUT_FILE_KEYS:
-        if not Path(config[file_key]).is_file():
-            raise FileNotFoundError(f"Input file not found: {config[file_key]}")
+    dataset_dir = Path(config["dataset_dir"])
+    if not dataset_dir.is_dir():
+        raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
+    for filename in INPUT_FILENAMES:
+        input_path = dataset_dir / filename
+        if not input_path.is_file():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
 
     if config["algo_name"] not in ALGORITHMS:
         raise ValueError(
@@ -108,12 +112,9 @@ def load_config(config_path):
 
 
 def build_instance_from_config(config):
+    dataset_dir = Path(config["dataset_dir"])
     return buildinstance.InputInstance(
-        config["paper_info"],
-        config["reviewer_info"],
-        config["similarity_scores"],
-        config["bid_scores"],
-        config["constraints"],
+        *(dataset_dir / filename for filename in INPUT_FILENAMES)
     )
 
 
@@ -244,7 +245,7 @@ def run_matching(config):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run robust paper assignment")
-    parser.add_argument("--config", default="configs/runner_config.yaml")
+    parser.add_argument("--config", default="configs/sample_config.yaml")
     parser.add_argument(
         "--log-level",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),

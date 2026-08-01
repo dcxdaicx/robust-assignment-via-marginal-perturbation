@@ -1,0 +1,10 @@
+dataset_dir: datasets/sample
+output_dir: results/sample/ramp
+algo_name: RAMP
+2stage: false
+optimize_sampling: true
+maxprob: 0.9
+beta: 0.1
+reward_region: 0.05
+pen_coauthor: 0.2
+pen_2cycle: 0.1
