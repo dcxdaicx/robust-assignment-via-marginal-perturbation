@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter
 from contextlib import redirect_stdout
 import logging
 from pathlib import Path
@@ -10,6 +10,60 @@ import matplotlib.pyplot as plt
 from . import metrics
 
 logger = logging.getLogger(__name__)
+
+
+def _coauthor_pair_counts(instance, matching_reviewers_by_paper):
+    """Count matched reviewer pairs at coauthor distance one and two."""
+    distance_one = 0
+    distance_two = 0
+    for reviewers in matching_reviewers_by_paper:
+        ordered_reviewers = sorted(reviewers)
+        for first_index, first in enumerate(ordered_reviewers):
+            first_coauthors = instance.coauthorship[first]
+            for second in ordered_reviewers[first_index + 1 :]:
+                second_coauthors = instance.coauthorship[second]
+                if second in first_coauthors or first in second_coauthors:
+                    distance_one += 1
+                elif not first_coauthors.isdisjoint(second_coauthors):
+                    distance_two += 1
+    return distance_one, distance_two
+
+
+def _strong_twocycle_count(instance, matching_reviewers_by_paper):
+    """Count reciprocal positive-bid assignments using only matched edges.
+
+    A directed count (r1, r2) records how many papers authored by r2 were both
+    positively bid on by and assigned to r1.  Multiplying reciprocal directed
+    counts gives exactly the number of strong two-cycle paper pairs.
+    """
+    assigned_bid_author_counts = Counter()
+    for paper, assigned_reviewers in enumerate(matching_reviewers_by_paper):
+        if not assigned_reviewers or not instance.authorlist[paper]:
+            continue
+        positive_bidders = instance.bid[paper]
+        for reviewer in assigned_reviewers:
+            if reviewer not in positive_bidders:
+                continue
+            for author in instance.authorlist[paper]:
+                if author != reviewer:
+                    assigned_bid_author_counts[reviewer, author] += 1
+
+    violations = 0
+    violating_reviewer_pairs = 0
+    for (first, second), forward_count in assigned_bid_author_counts.items():
+        if first >= second:
+            continue
+        reverse_count = assigned_bid_author_counts.get((second, first), 0)
+        if reverse_count:
+            violations += forward_count * reverse_count
+            violating_reviewer_pairs += 1
+    if violations:
+        logger.warning(
+            "Found %d strong 2-cycle violations across %d reviewer pairs",
+            violations,
+            violating_reviewer_pairs,
+        )
+    return violations
 
 
 def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
@@ -67,47 +121,13 @@ def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
         1 if required_papers == 0 else satisfied_papers / required_papers
     )
 
-    statistics.coauthor_dist_1_pairs_num = 0
-    statistics.coauthor_dist_2_pairs_num = 0
-    for p in range(instance.np):
-        for r1 in final_matching_r_for_p[p]:
-            seen_distance_2 = defaultdict(bool)
-            for r2 in instance.coauthorlist[r1]:
-                if r2 > r1:
-                    statistics.coauthor_dist_1_pairs_num += (
-                        r2 in final_matching_r_for_p[p]
-                    )
-                for r3 in instance.coauthorlist[r2]:
-                    if (
-                        r3 <= r1
-                        or r3 in instance.coauthorship[r1]
-                        or seen_distance_2[r3]
-                    ):
-                        continue
-                    seen_distance_2[r3] = True
-                    statistics.coauthor_dist_2_pairs_num += (
-                        r3 in final_matching_r_for_p[p]
-                    )
-
-    statistics.strong_twocycle_violations_1 = 0
-    for r1 in range(instance.nr):
-        for r2 in instance.bidpaper_authorlist[r1]:
-            if r2 > r1 and r1 in instance.bidpaper_author[r2]:
-                for p1 in instance.paperlist[r1]:
-                    for p2 in instance.paperlist[r2]:
-                        if r1 in instance.bid[p2] and r2 in instance.bid[p1]:
-                            if (
-                                r2 in final_matching_r_for_p[p1]
-                                and r1 in final_matching_r_for_p[p2]
-                            ):
-                                statistics.strong_twocycle_violations_1 += 1
-                                logger.warning(
-                                    "Strong 2-cycle between reviewers %s and %s on papers %s and %s",
-                                    instance.reviewer_id(r1),
-                                    instance.reviewer_id(r2),
-                                    instance.paper_id(p1),
-                                    instance.paper_id(p2),
-                                )
+    (
+        statistics.coauthor_dist_1_pairs_num,
+        statistics.coauthor_dist_2_pairs_num,
+    ) = _coauthor_pair_counts(instance, final_matching_r_for_p)
+    statistics.strong_twocycle_violations_1 = _strong_twocycle_count(
+        instance, final_matching_r_for_p
+    )
 
     reviewer_loads = [0 for _ in range(instance.nr)]
     for p in range(instance.np):
