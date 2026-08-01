@@ -13,6 +13,7 @@ from python import analyzer, buildinstance, solver
 LOGGER = logging.getLogger("matcher")
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 ALGORITHMS = {"RAMP", "Perturbed_Maximization", "Randomized", "Default"}
+MATCHING_FILES_DIRNAME = "matching_files"
 INPUT_FILE_KEYS = (
     "paper_info",
     "reviewer_info",
@@ -157,7 +158,7 @@ def write_stage_results(
 def run_matching(config):
     output_dir = Path(config["output_dir"])
     algorithm = config["algo_name"]
-    matching_output_dir = output_dir / algorithm
+    matching_output_dir = output_dir / MATCHING_FILES_DIRNAME
     matching_output_dir.mkdir(parents=True, exist_ok=True)
     add_run_log(matching_output_dir / "matching.log")
 
@@ -237,7 +238,7 @@ def run_matching(config):
     LOGGER.info(
         "Matching computation completed in %.3f seconds", statistics.running_time
     )
-    analyzer.output_statistics(instance, statistics, output_dir, algorithm)
+    analyzer.output_statistics(instance, statistics, output_dir)
     LOGGER.info("All outputs written in %.3f seconds", time.perf_counter() - start_time)
 
 

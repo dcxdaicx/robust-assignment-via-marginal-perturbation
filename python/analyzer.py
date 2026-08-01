@@ -191,9 +191,9 @@ def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
     return statistics
 
 
-def output_statistics(instance, statistics, output_dir, algo_name):
+def output_statistics(instance, statistics, output_dir):
     output_path = Path(output_dir)
-    stats_path = output_path / f"{algo_name}_statistics.txt"
+    stats_path = output_path / "statistics.txt"
     with open(stats_path, "w", encoding="utf-8") as file:
         with redirect_stdout(file):
             print(f"running_time: {statistics.running_time:.3f} seconds")

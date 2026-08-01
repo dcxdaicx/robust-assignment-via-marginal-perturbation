@@ -40,8 +40,8 @@ python3 runner.py --config configs/runner_config.yaml
 
 The sample has 20 papers, 30 reviewers, and 200 candidate edges. A successful
 run writes a 60-assignment matching to
-`results/sample/exp1/RAMP/matching_pairs.csv`. Sampling is randomized, so the
-selected pairs may differ between runs.
+`results/sample/exp1/matching_files/matching_pairs.csv`. Sampling is randomized,
+so the selected pairs may differ between runs.
 
 The sample is a small executable example, not the dataset used for every table
 in the paper. To run another instance, prepare the five CSV files described
@@ -133,15 +133,17 @@ similarity edges rather than to the full paper-reviewer Cartesian product.
 
 ## Outputs
 
-For a one-stage run, `output_dir/<algo_name>/` contains:
+The YAML `output_dir` is the complete experiment output path; the runner does
+not derive directory names from `algo_name`. For a one-stage run,
+`output_dir/matching_files/` contains:
 
 - `prob_assignment.csv`: nonzero fractional assignment probabilities
 - `matching_pairs.csv`: sampled integral assignments
 - `matching.log`: run metadata and timing
 
 For a two-stage run, the CSV names are prefixed with `stage1_` and `stage2_`.
-The base output directory also contains summary statistics and diagnostic
-plots. Use `--log-level DEBUG`, `INFO`, `WARNING`, or `ERROR` to select console
+The base output directory contains `statistics.txt` and the diagnostic plots.
+Use `--log-level DEBUG`, `INFO`, `WARNING`, or `ERROR` to select console
 verbosity.
 
 ## Repository layout
