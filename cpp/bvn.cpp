@@ -31,14 +31,13 @@ class BvnSampler {
     BvnSampler(int reviewer_count, int paper_count, bool optimize_sampling)
         : reviewer_count_(reviewer_count), paper_count_(paper_count),
           vertex_count_(reviewer_count + paper_count),
-          optimize_sampling_(optimize_sampling), heads_(vertex_count_ + 1),
-          vertex_loads_(vertex_count_ + 1), vertex_visited_(vertex_count_ + 1),
-          reviewer_regions_(reviewer_count_ + 1),
-          reviewer_institutions_(reviewer_count_ + 1),
-          paper_institution_heads_(vertex_count_ + 1),
-          coauthors_(reviewer_count_ + 1),
-          violated_papers_(reviewer_count_ + 1),
-          fractional_reviewers_by_paper_(paper_count_ + 1),
+          optimize_sampling_(optimize_sampling), heads_(vertex_count_),
+          vertex_loads_(vertex_count_), vertex_visited_(vertex_count_),
+          reviewer_regions_(reviewer_count_),
+          reviewer_institutions_(reviewer_count_),
+          paper_institution_heads_(vertex_count_), coauthors_(reviewer_count_),
+          violated_papers_(reviewer_count_),
+          fractional_reviewers_by_paper_(paper_count_),
           random_engine_(static_cast<unsigned int>(
               std::chrono::high_resolution_clock::now().time_since_epoch().count())) {
         // Edge indices start at 2 so paired reverse edges can use index ^ 1.
@@ -57,10 +56,7 @@ class BvnSampler {
         coauthors_[second].insert(first);
     }
 
-    void AddAssignmentEdge(int reviewer_zero_based, int paper_vertex_zero_based,
-                           double probability) {
-        const int reviewer = reviewer_zero_based + 1;
-        const int paper_vertex = paper_vertex_zero_based + 1;
+    void AddAssignmentEdge(int reviewer, int paper_vertex, double probability) {
         const int flow = static_cast<int>(
             std::llround(probability * static_cast<double>(kProbabilityScale)));
 
@@ -76,8 +72,8 @@ class BvnSampler {
         RemovePairIfIntegral(static_cast<int>(edges_.size()) - 1);
 
         if (flow != kProbabilityScale) {
-            fractional_reviewers_by_paper_[paper_vertex - reviewer_count_].push_back(
-                reviewer);
+            fractional_reviewers_by_paper_[paper_vertex - reviewer_count_]
+                .push_back(reviewer);
         }
     }
 
@@ -89,7 +85,7 @@ class BvnSampler {
         for (std::size_t edge_index = 2; edge_index < edges_.size(); ++edge_index) {
             const Edge &edge = edges_[edge_index];
             if (edge.from < edge.to && edge.flow == kProbabilityScale) {
-                std::cout << edge.from - 1 << ' ' << edge.to - 1 << '\n';
+                std::cout << edge.from << ' ' << edge.to << '\n';
             }
         }
     }
@@ -107,7 +103,7 @@ class BvnSampler {
 
     static bool IsIntegral(int value) { return value % kProbabilityScale == 0; }
 
-    bool IsReviewer(int vertex) const { return vertex <= reviewer_count_; }
+    bool IsReviewer(int vertex) const { return vertex < reviewer_count_; }
 
     void AddDirectedEdge(int from, int to, int flow) {
         edges_.push_back({from, to, heads_[from], flow, false});
@@ -510,7 +506,7 @@ class BvnSampler {
         while (active_directed_edges_ != 0) {
             bool made_progress = false;
             std::fill(vertex_visited_.begin(), vertex_visited_.end(), false);
-            for (int vertex = 1; vertex <= vertex_count_; ++vertex) {
+            for (int vertex = 0; vertex < vertex_count_; ++vertex) {
                 if (IsIntegral(vertex_loads_[vertex])) {
                     continue;
                 }
@@ -525,7 +521,7 @@ class BvnSampler {
                 break;
             }
             std::fill(vertex_visited_.begin(), vertex_visited_.end(), false);
-            for (int vertex = 1; vertex <= vertex_count_; ++vertex) {
+            for (int vertex = 0; vertex < vertex_count_; ++vertex) {
                 ResetStacks();
                 if (Walk(vertex, 0, false)) {
                     made_progress = true;
@@ -540,7 +536,7 @@ class BvnSampler {
     }
 
     void InitializeHeuristics(std::vector<int> &reviewer_order) {
-        for (int paper = 1; paper <= paper_count_; ++paper) {
+        for (int paper = 0; paper < paper_count_; ++paper) {
             const std::vector<int> &reviewers =
                 fractional_reviewers_by_paper_[paper];
             for (std::size_t first = 0; first < reviewers.size(); ++first) {
@@ -557,8 +553,8 @@ class BvnSampler {
         }
 
         reviewer_order.resize(reviewer_count_);
-        for (int reviewer = 1; reviewer <= reviewer_count_; ++reviewer) {
-            reviewer_order[reviewer - 1] = reviewer;
+        for (int reviewer = 0; reviewer < reviewer_count_; ++reviewer) {
+            reviewer_order[reviewer] = reviewer;
         }
         std::sort(reviewer_order.begin(), reviewer_order.end(),
                   [this](int first, int second) {
@@ -586,13 +582,13 @@ class BvnSampler {
             }
         }
 
-        int next_paper = 1;
-        while (next_paper <= paper_count_) {
-            while (next_paper <= paper_count_ &&
+        int next_paper = 0;
+        while (next_paper < paper_count_) {
+            while (next_paper < paper_count_ &&
                    IsIntegral(vertex_loads_[reviewer_count_ + next_paper])) {
                 ++next_paper;
             }
-            if (next_paper > paper_count_) {
+            if (next_paper == paper_count_) {
                 break;
             }
             ResetOptimizedSearch();
@@ -671,10 +667,10 @@ int main(int argc, char **argv) {
     }
 
     BvnSampler sampler(reviewer_count, paper_count, optimize_sampling);
-    for (int reviewer = 1; reviewer <= reviewer_count; ++reviewer) {
+    for (int reviewer = 0; reviewer < reviewer_count; ++reviewer) {
         int region = 0;
         int institution = 0;
-        if (!(std::cin >> region >> institution) || region <= 0 ||
+        if (!(std::cin >> region >> institution) || region < 0 ||
             institution <= 0) {
             std::cerr << "Invalid reviewer metadata\n";
             return 1;
@@ -690,8 +686,8 @@ int main(int argc, char **argv) {
     for (int pair = 0; pair < coauthor_pair_count; ++pair) {
         int first = 0;
         int second = 0;
-        if (!(std::cin >> first >> second) || first <= 0 ||
-            first > reviewer_count || second <= 0 || second > reviewer_count ||
+        if (!(std::cin >> first >> second) || first < 0 ||
+            first >= reviewer_count || second < 0 || second >= reviewer_count ||
             first == second) {
             std::cerr << "Invalid coauthor pair\n";
             return 1;

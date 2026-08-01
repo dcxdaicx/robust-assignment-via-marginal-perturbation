@@ -110,7 +110,7 @@ def _round_paper_probabilities(instance, probability_matrix):
 def _sampler_input(instance, probability_matrix):
     lines = [f"{instance.nr} {instance.np}"]
     lines.extend(
-        f"{instance.region[reviewer] + 1} 1" for reviewer in range(instance.nr)
+        f"{instance.region[reviewer]} 1" for reviewer in range(instance.nr)
     )
     coauthor_pairs = sorted(
         {
@@ -122,7 +122,7 @@ def _sampler_input(instance, probability_matrix):
     )
     lines.append(str(len(coauthor_pairs)))
     lines.extend(
-        f"{reviewer + 1} {coauthor + 1}" for reviewer, coauthor in coauthor_pairs
+        f"{reviewer} {coauthor}" for reviewer, coauthor in coauthor_pairs
     )
 
     nonzero_papers_for_reviewer = _round_paper_probabilities(
