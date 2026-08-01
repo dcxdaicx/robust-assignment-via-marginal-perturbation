@@ -125,7 +125,7 @@ def write_rows(path, header, rows):
         writer.writerows(rows)
 
 
-def solve_stage(instance, config, senior_only):
+def solve_stage(instance, config, reviewer_pool):
     return solver.solve(
         instance,
         config["algo_name"],
@@ -136,7 +136,7 @@ def solve_stage(instance, config, senior_only):
         config.get("pen_coauthor"),
         config.get("pen_2cycle"),
         optimize_sampling=config.get("optimize_sampling", False),
-        senior_only=senior_only,
+        reviewer_pool=reviewer_pool,
     )
 
 
@@ -179,7 +179,7 @@ def run_matching(config):
     if config["2stage"]:
         LOGGER.info("Running stage 1 for senior reviewers")
         probability_matrix, probability_pairs, matching_pairs = solve_stage(
-            instance, config, senior_only=True
+            instance, config, reviewer_pool="senior"
         )
         write_stage_results(
             matching_output_dir,
@@ -198,9 +198,9 @@ def run_matching(config):
             instance.matched_this_stage[paper].add(reviewer)
             instance.ellp[paper] -= 1
 
-        LOGGER.info("Running stage 2 for junior reviewers")
+        LOGGER.info("Running stage 2 for all reviewers")
         probability_matrix, probability_pairs, matching_pairs = solve_stage(
-            instance, config, senior_only=False
+            instance, config, reviewer_pool="all"
         )
         write_stage_results(
             matching_output_dir,
@@ -221,7 +221,7 @@ def run_matching(config):
     else:
         LOGGER.info("Running one-stage matching for all reviewers")
         probability_matrix, probability_pairs, matching_pairs = solve_stage(
-            instance, config, senior_only=False
+            instance, config, reviewer_pool="all"
         )
         write_stage_results(
             matching_output_dir,

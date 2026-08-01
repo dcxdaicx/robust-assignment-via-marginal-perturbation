@@ -6,6 +6,7 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 PROGRESS_PAPER_INTERVAL = 5_000
 PWL_STEP = 0.1
+REVIEWER_POOLS = {"all", "senior"}
 
 
 def _log_paper_progress(stage, paper, total_papers):
@@ -28,25 +29,38 @@ def _pwl_grid(upper_bound):
     return points
 
 
+def _reviewer_is_eligible(instance, reviewer, reviewer_pool):
+    if reviewer_pool == "all":
+        return True
+    return instance.seniority[reviewer] >= 1
+
+
+def _paper_loads(instance, reviewer_pool):
+    if reviewer_pool == "senior":
+        return instance.ellp_sen.copy()
+    return instance.ellp.copy()
+
+
+def _is_nonzero_term(value):
+    return not isinstance(value, (int, float)) or value != 0
+
+
 def _add_assignment_and_load_constraints(
-    instance, solver, assignment, ellp, senior_only
+    instance, solver, assignment, ellp, reviewer_pool
 ):
     # Keep the assignment and load constraints aligned across all algorithms.
     for p in range(instance.np):
         assigned = 0
         for r in instance.remained_r_for_p[p]:
             assigned += assignment[p][r]
-        if senior_only:
-            solver.addConstr(assigned <= ellp[p])
-        else:
-            solver.addConstr(assigned == ellp[p])
+        solver.addConstr(assigned == ellp[p])
 
     for r in range(instance.nr):
         load = 0
         for p in instance.remained_p_for_r[r]:
             load += assignment[p][r]
         solver.addConstr(load <= instance.ellr[r])
-        if not senior_only or instance.seniority[r] >= 1:
+        if _reviewer_is_eligible(instance, r, reviewer_pool):
             solver.addConstr(load >= instance.min_ellr[r])
 
 
@@ -66,16 +80,18 @@ def _assignment_upper_bound(instance, paper, reviewer, maxprob, dynamic_maxprob)
 
 
 def _optimize_and_extract(
-    gp, solver, assignment, instance, algorithm_name, senior_only
+    gp, solver, assignment, instance, algorithm_name, reviewer_pool
 ):
     logger.info("%s model constructed; starting Gurobi optimization", algorithm_name)
     solver.optimize()
     if solver.status == gp.GRB.Status.INFEASIBLE:
-        raise RuntimeError(f"{algorithm_name} infeasible; senior_only={senior_only}")
+        raise RuntimeError(
+            f"{algorithm_name} infeasible; reviewer_pool={reviewer_pool}"
+        )
     if solver.status != gp.GRB.Status.OPTIMAL:
         raise RuntimeError(
             f"{algorithm_name} stopped with Gurobi status {solver.status}; "
-            f"senior_only={senior_only}"
+            f"reviewer_pool={reviewer_pool}"
         )
     logger.info("%s optimization objective: %.6f", algorithm_name, solver.ObjVal)
 
@@ -89,7 +105,7 @@ def _optimize_and_extract(
     return assignment
 
 
-def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
+def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, reviewer_pool="all"):
     # PLRA Gurobi implementation
     # Inputs arguments:
     #   instance: the input instance
@@ -103,10 +119,9 @@ def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
     # Initialize assignment matrix and objective function
     objective = 0.0
     assignment = [defaultdict(float) for _ in range(instance.np)]
-    if senior_only:
-        ellp = instance.ellp_sen.copy()
-    else:
-        ellp = instance.ellp.copy()
+    if reviewer_pool not in REVIEWER_POOLS:
+        raise ValueError(f"Unknown reviewer pool: {reviewer_pool}")
+    ellp = _paper_loads(instance, reviewer_pool)
     logger.info("Building PLRA assignment variables and objective")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
@@ -116,7 +131,7 @@ def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
                 continue
             if instance.constraint_for(p, r) == -1:
                 continue
-            if senior_only and instance.seniority[r] < 1:
+            if not _reviewer_is_eligible(instance, r, reviewer_pool):
                 continue
 
             assignment[p][r] = solver.addVar(
@@ -128,15 +143,19 @@ def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
     solver.setObjective(objective)
     logger.info("Adding PLRA paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
-        instance, solver, assignment, ellp, senior_only
+        instance, solver, assignment, ellp, reviewer_pool
     )
     logger.info("Finished adding PLRA assignment and load constraints")
     # Use dual simplex
     solver.params.Method = 1
-    return _optimize_and_extract(gp, solver, assignment, instance, "PLRA", senior_only)
+    return _optimize_and_extract(
+        gp, solver, assignment, instance, "PLRA", reviewer_pool
+    )
 
 
-def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
+def PMQ(
+    instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, reviewer_pool="all"
+):
     # PM-Quadratic Gurobi implementation
     #   The perturbation function used is f(x) = x - beta * x ^ 2
     # Inputs arguments:
@@ -152,10 +171,9 @@ def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False
     # Initialize assignment matrix and objective function
     objective = 0.0
     assignment = [defaultdict(float) for _ in range(instance.np)]
-    if senior_only:
-        ellp = instance.ellp_sen.copy()
-    else:
-        ellp = instance.ellp.copy()
+    if reviewer_pool not in REVIEWER_POOLS:
+        raise ValueError(f"Unknown reviewer pool: {reviewer_pool}")
+    ellp = _paper_loads(instance, reviewer_pool)
     logger.info("Building PMQ assignment variables and objective")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
@@ -165,7 +183,7 @@ def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False
                 continue
             if instance.constraint_for(p, r) == -1:
                 continue
-            if senior_only and instance.seniority[r] < 1:
+            if not _reviewer_is_eligible(instance, r, reviewer_pool):
                 continue
             x = solver.addVar(
                 lb=0,
@@ -177,12 +195,14 @@ def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False
     solver.setObjective(objective)
     logger.info("Adding PMQ paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
-        instance, solver, assignment, ellp, senior_only
+        instance, solver, assignment, ellp, reviewer_pool
     )
     logger.info("Finished adding PMQ assignment and load constraints")
     # Use barrier method
     solver.params.Method = 2
-    return _optimize_and_extract(gp, solver, assignment, instance, "PMQ", senior_only)
+    return _optimize_and_extract(
+        gp, solver, assignment, instance, "PMQ", reviewer_pool
+    )
 
 
 def ramp(
@@ -193,7 +213,7 @@ def ramp(
     reward_region=0.1,
     pen_coauthor=0.2,
     pen_2cycle=0.1,
-    senior_only=False,
+    reviewer_pool="all",
 ):
     # Our-Algorithm Gurobi implementation
     # Inputs arguments:
@@ -214,15 +234,9 @@ def ramp(
     # Scale objectives to reduce numerical precision issues.
     obj_scalar = 1000
 
-    # Keep every configured term numerically significant after scaling.
-    reward_region = max(reward_region, 1e-3)
-    pen_coauthor = max(pen_coauthor, 1e-3)
-    pen_2cycle = max(pen_2cycle, 1e-3)
-
-    if senior_only:
-        ellp = instance.ellp_sen.copy()
-    else:
-        ellp = instance.ellp.copy()
+    if reviewer_pool not in REVIEWER_POOLS:
+        raise ValueError(f"Unknown reviewer pool: {reviewer_pool}")
+    ellp = _paper_loads(instance, reviewer_pool)
 
     # Create variables
     assignment = [defaultdict(float) for _ in range(instance.np)]
@@ -235,7 +249,7 @@ def ramp(
                 continue
             if instance.constraint_for(p, r) == -1:
                 continue
-            if senior_only and instance.seniority[r] < 1:
+            if not _reviewer_is_eligible(instance, r, reviewer_pool):
                 continue
             assignment[p][r] = solver.addVar(
                 lb=0,
@@ -245,36 +259,46 @@ def ramp(
     objective = 0
 
     # Set region reward
-    logger.info("Adding RAMP region-diversity terms")
-    for p in range(instance.np):
-        reg_sum = [0 for _ in range(instance.region_count)]
-        for r in instance.remained_r_for_p[p]:
-            reg_sum[instance.region[r]] += assignment[p][r]
-        for reg in range(instance.region_count):
-            reg_var = solver.addVar(ub=1)
-            solver.addConstr(reg_var <= reg_sum[reg])
-            objective -= obj_scalar * reward_region * reg_var
-        _log_paper_progress("Adding RAMP region terms", p, instance.np)
+    if reward_region > 0:
+        logger.info("Adding RAMP region-diversity terms")
+        for p in range(instance.np):
+            reg_sum = defaultdict(float)
+            for r in instance.remained_r_for_p[p]:
+                value = assignment[p].get(r, 0.0)
+                if not _is_nonzero_term(value):
+                    continue
+                reg_sum[instance.region[r]] += value
+            for value in reg_sum.values():
+                reg_var = solver.addVar(ub=1)
+                solver.addConstr(reg_var <= value)
+                objective -= obj_scalar * reward_region * reg_var
+            _log_paper_progress("Adding RAMP region terms", p, instance.np)
+    else:
+        logger.info("Skipping RAMP region-diversity terms (reward_region=0)")
 
     # Set coauthor penalty
-    logger.info("Adding RAMP coauthor terms")
-    for r in range(instance.nr):
-        neighboring_reviewers = instance.coauthorlist[r].copy()
-        neighboring_reviewers.append(r)
-        for p in instance.bidlist[r]:
-            coauthor_var = solver.addVar(lb=1)
-            coauthor_sum = 0
-            for r2 in neighboring_reviewers:
-                coauthor_sum += assignment[p].get(r2, 0.0)
-            solver.addConstr(coauthor_var >= coauthor_sum)
-            objective += obj_scalar * pen_coauthor * coauthor_var
+    if pen_coauthor > 0:
+        logger.info("Adding RAMP coauthor terms")
+        for r in range(instance.nr):
+            neighboring_reviewers = instance.coauthorlist[r].copy()
+            neighboring_reviewers.append(r)
+            for p in instance.bidlist[r]:
+                coauthor_sum = sum(
+                    assignment[p].get(r2, 0.0) for r2 in neighboring_reviewers
+                )
+                if not _is_nonzero_term(coauthor_sum):
+                    continue
+                coauthor_var = solver.addVar(lb=1)
+                solver.addConstr(coauthor_var >= coauthor_sum)
+                objective += obj_scalar * pen_coauthor * coauthor_var
+    else:
+        logger.info("Skipping RAMP coauthor terms (pen_coauthor=0)")
 
     # Set linear objective
     # Gurobi needs to first set linear objectives, then set piecewise-linear objectives
     solver.setObjective(objective)
 
     # Set 2cycle penalty
-    logger.info("Adding RAMP strong 2-cycle terms")
     cycle_grids = {}
 
     def cycle_assignment(paper, reviewer):
@@ -291,44 +315,48 @@ def ramp(
             upper_bound = float(value)
         return value, upper_bound
 
-    for r1 in range(instance.nr):
-        for r2 in instance.bidpaper_authorlist[r1]:
-            if r2 > r1 and r1 in instance.bidpaper_author[r2]:
-                for p1 in instance.paperlist[r1]:
-                    for p2 in instance.paperlist[r2]:
-                        if r1 in instance.bid[p2] and r2 in instance.bid[p1]:
-                            if (
-                                instance.constraint_for(p2, r1) == 1
-                                and instance.constraint_for(p1, r2) == 1
-                            ):
-                                continue
-                            first_assignment, first_upper_bound = cycle_assignment(
-                                p2, r1
-                            )
-                            second_assignment, second_upper_bound = cycle_assignment(
-                                p1, r2
-                            )
-                            cycle_upper_bound = (
-                                first_upper_bound + second_upper_bound
-                            )
-                            if cycle_upper_bound == 0:
-                                continue
-                            sum_2cycle = solver.addVar(
-                                lb=0, ub=cycle_upper_bound
-                            )
-                            solver.addConstr(
-                                sum_2cycle
-                                >= first_assignment + second_assignment
-                            )
-                            if cycle_upper_bound not in cycle_grids:
-                                xpts = _pwl_grid(cycle_upper_bound)
-                                ypts = [
-                                    obj_scalar * pen_2cycle * point * point
-                                    for point in xpts
-                                ]
-                                cycle_grids[cycle_upper_bound] = (xpts, ypts)
-                            xpts, ypts = cycle_grids[cycle_upper_bound]
-                            solver.setPWLObj(sum_2cycle, xpts, ypts)
+    if pen_2cycle > 0:
+        logger.info("Adding RAMP strong 2-cycle terms")
+        for r1 in range(instance.nr):
+            for r2 in instance.bidpaper_authorlist[r1]:
+                if r2 > r1 and r1 in instance.bidpaper_author[r2]:
+                    for p1 in instance.paperlist[r1]:
+                        for p2 in instance.paperlist[r2]:
+                            if r1 in instance.bid[p2] and r2 in instance.bid[p1]:
+                                if (
+                                    instance.constraint_for(p2, r1) == 1
+                                    and instance.constraint_for(p1, r2) == 1
+                                ):
+                                    continue
+                                first_assignment, first_upper_bound = cycle_assignment(
+                                    p2, r1
+                                )
+                                second_assignment, second_upper_bound = cycle_assignment(
+                                    p1, r2
+                                )
+                                cycle_upper_bound = (
+                                    first_upper_bound + second_upper_bound
+                                )
+                                if cycle_upper_bound == 0:
+                                    continue
+                                sum_2cycle = solver.addVar(
+                                    lb=0, ub=cycle_upper_bound
+                                )
+                                solver.addConstr(
+                                    sum_2cycle
+                                    >= first_assignment + second_assignment
+                                )
+                                if cycle_upper_bound not in cycle_grids:
+                                    xpts = _pwl_grid(cycle_upper_bound)
+                                    ypts = [
+                                        obj_scalar * pen_2cycle * point * point
+                                        for point in xpts
+                                    ]
+                                    cycle_grids[cycle_upper_bound] = (xpts, ypts)
+                                xpts, ypts = cycle_grids[cycle_upper_bound]
+                                solver.setPWLObj(sum_2cycle, xpts, ypts)
+    else:
+        logger.info("Skipping RAMP strong 2-cycle terms (pen_2cycle=0)")
 
     # Add piecewise-linear objectives
     logger.info("Adding RAMP piecewise-linear assignment objectives")
@@ -347,17 +375,19 @@ def ramp(
                     ]
                     assignment_grids[upper_bound] = (xpts, shape)
                 xpts, shape = assignment_grids[upper_bound]
-                val = max(1e-3, instance.s[p][r])
+                val = instance.s[p][r]
                 ypts = [value * val for value in shape]
                 solver.setPWLObj(assignment[p][r], xpts, ypts)
         _log_paper_progress("Adding RAMP PWL objectives", p, instance.np)
 
     logger.info("Adding RAMP paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
-        instance, solver, assignment, ellp, senior_only
+        instance, solver, assignment, ellp, reviewer_pool
     )
     logger.info("Finished adding RAMP assignment and load constraints")
 
     # Use dual simplex
     solver.params.Method = 1
-    return _optimize_and_extract(gp, solver, assignment, instance, "RAMP", senior_only)
+    return _optimize_and_extract(
+        gp, solver, assignment, instance, "RAMP", reviewer_pool
+    )

@@ -82,8 +82,11 @@ documents a complete RAMP run.
 | `pen_2cycle` | RAMP two-cycle penalty |
 
 With `2stage: true`, stage 1 assigns the requested number of senior reviewers
-and stage 2 fills the remaining demand. With `2stage: false`, all reviewers are
-assigned in one optimization.
+using only the senior pool, and stage 2 fills the remaining demand using the
+full reviewer pool. With `2stage: false`, all reviewers are assigned in one
+optimization. A zero `reward_region`, `pen_coauthor`, or `pen_2cycle` disables
+that RAMP component completely, so its auxiliary variables and constraints are
+not built.
 
 ## Input format
 

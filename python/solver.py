@@ -20,7 +20,7 @@ def _solve_fractional_assignment(
     reward_region,
     pen_coauthor,
     pen_2cycle,
-    senior_only,
+    reviewer_pool,
 ):
     maxprob = 1.0 if maxprob is None else float(maxprob)
     beta = 0.1 if beta is None else float(beta)
@@ -37,7 +37,7 @@ def _solve_fractional_assignment(
             reward_region=reward_region,
             pen_coauthor=pen_coauthor,
             pen_2cycle=pen_2cycle,
-            senior_only=senior_only,
+            reviewer_pool=reviewer_pool,
         )
     if algo_name == "Perturbed_Maximization":
         return algorithms.PMQ(
@@ -45,21 +45,21 @@ def _solve_fractional_assignment(
             beta=beta,
             maxprob=maxprob,
             dynamic_maxprob=dynamic_maxprob,
-            senior_only=senior_only,
+            reviewer_pool=reviewer_pool,
         )
     if algo_name == "Randomized":
         return algorithms.PLRA(
             instance,
             maxprob=maxprob,
             dynamic_maxprob=dynamic_maxprob,
-            senior_only=senior_only,
+            reviewer_pool=reviewer_pool,
         )
     if algo_name == "Default":
         return algorithms.PLRA(
             instance,
             maxprob=1.0,
             dynamic_maxprob=dynamic_maxprob,
-            senior_only=senior_only,
+            reviewer_pool=reviewer_pool,
         )
     raise ValueError(f"Unknown algorithm: {algo_name}")
 
@@ -190,7 +190,7 @@ def solve(
     pen_coauthor=0.1,
     pen_2cycle=0.2,
     optimize_sampling=False,
-    senior_only=False,
+    reviewer_pool="all",
 ):
     solver_assignment = _solve_fractional_assignment(
         instance,
@@ -201,7 +201,7 @@ def solve(
         reward_region,
         pen_coauthor,
         pen_2cycle,
-        senior_only,
+        reviewer_pool,
     )
     probability_matrix = _probability_matrix(instance, solver_assignment)
     matching_pairs = _sample_matching(instance, optimize_sampling, probability_matrix)
