@@ -294,7 +294,6 @@ class InputInstance:
 
     def _initialize_pairwise_data(self):
         self.s = [dict() for _ in range(self.np)]
-        self.remained = [set() for _ in range(self.np)]
         self.remained_r_for_p = [[] for _ in range(self.np)]
         self.remained_p_for_r = [[] for _ in range(self.nr)]
         self.constraint = [dict() for _ in range(self.np)]
@@ -305,14 +304,13 @@ class InputInstance:
             paper, reviewer = self._pair_indices(
                 row, similarity_scores_file, line_number
             )
-            if reviewer in self.remained[paper]:
+            if reviewer in self.s[paper]:
                 raise ValueError(
                     f"Duplicate similarity pair in {similarity_scores_file} at line "
                     f"{line_number}: ({self.paper_id(paper)}, {self.reviewer_id(reviewer)})"
                 )
             score = _number(row["score"], "score", similarity_scores_file, line_number)
             self.s[paper][reviewer] = score
-            self.remained[paper].add(reviewer)
             self.remained_r_for_p[paper].append(reviewer)
             self.remained_p_for_r[reviewer].append(paper)
 
@@ -378,7 +376,7 @@ class InputInstance:
                     f"Constraint must be -1 or 1 in {constraints_file} at line "
                     f"{line_number}; got {constraint}"
                 )
-            if constraint == 1 and reviewer not in self.remained[paper]:
+            if constraint == 1 and reviewer not in self.s[paper]:
                 raise ValueError(
                     f"Forced assignment ({self.paper_id(paper)}, "
                     f"{self.reviewer_id(reviewer)}) in {constraints_file} at line "

@@ -127,13 +127,17 @@ def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
             statistics.assigned_bid_scores.append(instance.bid_score[p].get(r, 0.0))
 
     statistics.reviewer_bid_coverage = []
+    assigned_papers_by_reviewer = [[] for _ in range(instance.nr)]
+    for p, reviewers in enumerate(final_matching_r_for_p):
+        for r in reviewers:
+            assigned_papers_by_reviewer[r].append(p)
     for r in range(instance.nr):
         if reviewer_loads[r] == 0:
             continue
-        bid_covered_assignments = 0
-        for p, reviewers in enumerate(final_matching_r_for_p):
-            if r in reviewers and instance.bid_score[p].get(r, 0.0) > 0:
-                bid_covered_assignments += 1
+        bid_covered_assignments = sum(
+            instance.bid_score[p].get(r, 0.0) > 0
+            for p in assigned_papers_by_reviewer[r]
+        )
         statistics.reviewer_bid_coverage.append(
             bid_covered_assignments / reviewer_loads[r]
         )
@@ -164,6 +168,12 @@ def output_statistics(instance, statistics, output_dir, algo_name):
                 )
             print("support_size:", statistics.support_size)
             print("entropy:", f"{statistics.entropy:.3f}")
+            print("max_assignment_probability:", f"{statistics.max_prob:.6f}")
+            print(
+                "average_paper_max_assignment_probability:",
+                f"{statistics.avg_max_prob:.6f}",
+            )
+            print("l2_norm:", f"{statistics.l2norm_loss:.3f}")
             print("geographic_diversity:", f"{statistics.geographic_diversity:.3f}")
             print(
                 "seniority_requirement_fulfillment_rate:",
