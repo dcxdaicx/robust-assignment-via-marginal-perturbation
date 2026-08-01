@@ -4,6 +4,18 @@ import logging
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+PROGRESS_PAPER_INTERVAL = 5_000
+
+
+def _log_paper_progress(stage, paper, total_papers):
+    completed = paper + 1
+    if completed % PROGRESS_PAPER_INTERVAL == 0 or completed == total_papers:
+        logger.info(
+            "%s: %s / %s papers",
+            stage,
+            f"{completed:,}",
+            f"{total_papers:,}",
+        )
 
 
 def _add_assignment_and_load_constraints(
@@ -48,6 +60,7 @@ def _assignment_upper_bound(instance, paper, reviewer, maxprob, dynamic_maxprob)
 def _optimize_and_extract(
     gp, solver, assignment, instance, algorithm_name, senior_only
 ):
+    logger.info("%s model constructed; starting Gurobi optimization", algorithm_name)
     solver.optimize()
     if solver.status == gp.GRB.Status.INFEASIBLE:
         raise RuntimeError(f"{algorithm_name} infeasible; senior_only={senior_only}")
@@ -62,6 +75,9 @@ def _optimize_and_extract(
         for r in instance.remained_r_for_p[p]:
             value = assignment[p][r]
             assignment[p][r] = value.X if isinstance(value, gp.Var) else value
+        _log_paper_progress(
+            f"Extracting {algorithm_name} solution", p, instance.np
+        )
     return assignment
 
 
@@ -83,6 +99,7 @@ def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
         ellp = instance.ellp_sen.copy()
     else:
         ellp = instance.ellp.copy()
+    logger.info("Building PLRA assignment variables and objective")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
             if instance.constraint_for(p, r) == 1:
@@ -99,10 +116,13 @@ def PLRA(instance, maxprob=1.0, dynamic_maxprob=None, senior_only=False):
                 ub=_assignment_upper_bound(instance, p, r, maxprob, dynamic_maxprob),
             )
             objective -= assignment[p][r] * instance.s[p][r]
+        _log_paper_progress("Building PLRA variables", p, instance.np)
     solver.setObjective(objective)
+    logger.info("Adding PLRA paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
         instance, solver, assignment, ellp, senior_only
     )
+    logger.info("Finished adding PLRA assignment and load constraints")
     # Use dual simplex
     solver.params.Method = 1
     return _optimize_and_extract(gp, solver, assignment, instance, "PLRA", senior_only)
@@ -128,6 +148,7 @@ def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False
         ellp = instance.ellp_sen.copy()
     else:
         ellp = instance.ellp.copy()
+    logger.info("Building PMQ assignment variables and objective")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
             if instance.constraint_for(p, r) == 1:
@@ -144,10 +165,13 @@ def PMQ(instance, beta=0.5, maxprob=1.0, dynamic_maxprob=None, senior_only=False
             )
             assignment[p][r] = x
             objective += (-x + beta * x * x) * instance.s[p][r]
+        _log_paper_progress("Building PMQ variables", p, instance.np)
     solver.setObjective(objective)
+    logger.info("Adding PMQ paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
         instance, solver, assignment, ellp, senior_only
     )
+    logger.info("Finished adding PMQ assignment and load constraints")
     # Use barrier method
     solver.params.Method = 2
     return _optimize_and_extract(gp, solver, assignment, instance, "PMQ", senior_only)
@@ -194,6 +218,7 @@ def ramp(
 
     # Create variables
     assignment = [defaultdict(float) for _ in range(instance.np)]
+    logger.info("Building RAMP assignment variables")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
             if instance.constraint_for(p, r) == 1:
@@ -208,9 +233,11 @@ def ramp(
                 lb=0,
                 ub=_assignment_upper_bound(instance, p, r, maxprob, dynamic_maxprob),
             )
+        _log_paper_progress("Building RAMP variables", p, instance.np)
     objective = 0
 
     # Set region reward
+    logger.info("Adding RAMP region-diversity terms")
     for p in range(instance.np):
         reg_sum = [0 for _ in range(instance.region_count)]
         for r in instance.remained_r_for_p[p]:
@@ -219,8 +246,10 @@ def ramp(
             reg_var = solver.addVar(ub=1)
             solver.addConstr(reg_var <= reg_sum[reg])
             objective -= obj_scalar * reward_region * reg_var
+        _log_paper_progress("Adding RAMP region terms", p, instance.np)
 
     # Set coauthor penalty
+    logger.info("Adding RAMP coauthor terms")
     for r in range(instance.nr):
         neighboring_reviewers = instance.coauthorlist[r].copy()
         neighboring_reviewers.append(r)
@@ -237,6 +266,7 @@ def ramp(
     solver.setObjective(objective)
 
     # Set 2cycle penalty
+    logger.info("Adding RAMP strong 2-cycle terms")
     for r1 in range(instance.nr):
         for r2 in instance.bidpaper_authorlist[r1]:
             if r2 > r1 and r1 in instance.bidpaper_author[r2]:
@@ -262,6 +292,7 @@ def ramp(
                             solver.setPWLObj(sum_2cycle, xpts, ypts)
 
     # Add piecewise-linear objectives
+    logger.info("Adding RAMP piecewise-linear assignment objectives")
     for p in range(instance.np):
         for r in instance.remained_r_for_p[p]:
             if isinstance(assignment[p][r], gp.Var):
@@ -274,10 +305,13 @@ def ramp(
                     ypts.append(obj_scalar * (-now + beta * now * now) * val)
                     now += 0.1
                 solver.setPWLObj(assignment[p][r], xpts, ypts)
+        _log_paper_progress("Adding RAMP PWL objectives", p, instance.np)
 
+    logger.info("Adding RAMP paper and reviewer load constraints")
     _add_assignment_and_load_constraints(
         instance, solver, assignment, ellp, senior_only
     )
+    logger.info("Finished adding RAMP assignment and load constraints")
 
     # Use dual simplex
     solver.params.Method = 1
