@@ -126,9 +126,10 @@ paper_id,reviewer_id,constraint
 A constraint of `-1` forbids an edge. A constraint of `1` records a previously
 assigned edge, which must also occur in `similarity_scores.csv`. Only similarity
 edges are solver candidates; bid and constraint rows add metadata but do not
-create candidate edges. Memory for candidate adjacency is therefore
-proportional to the number of similarity edges rather than to the full
-paper-reviewer Cartesian product.
+create candidate edges. Similarity rows with a score less than or equal to zero
+are discarded while loading and do not create solver variables. Memory for
+candidate adjacency is therefore proportional to the number of positive
+similarity edges rather than to the full paper-reviewer Cartesian product.
 
 ## Outputs
 

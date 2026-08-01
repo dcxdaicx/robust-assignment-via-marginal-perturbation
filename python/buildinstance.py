@@ -93,6 +93,7 @@ class InputInstance:
         self.bad_papers_list = []
         self.zero_capacity_reviewers = []
         self.reviewers_with_no_similarity_scores = []
+        self.nonpositive_similarity_scores_skipped = 0
 
         self._load_papers(paper_info_file)
         self._load_reviewers(reviewer_info_file)
@@ -112,6 +113,11 @@ class InputInstance:
             self.nr,
             sum(len(reviewers) for reviewers in self.remained_r_for_p),
         )
+        if self.nonpositive_similarity_scores_skipped:
+            logger.info(
+                "Skipped %d non-positive similarity-score rows",
+                self.nonpositive_similarity_scores_skipped,
+            )
 
     def _load_papers(self, paper_info_file):
         self.ellp = []
@@ -304,25 +310,26 @@ class InputInstance:
             paper, reviewer = self._pair_indices(
                 row, similarity_scores_file, line_number
             )
+            score = _number(row["score"], "score", similarity_scores_file, line_number)
+            if score <= 0:
+                self.nonpositive_similarity_scores_skipped += 1
+                continue
             if reviewer in self.s[paper]:
                 raise ValueError(
                     f"Duplicate similarity pair in {similarity_scores_file} at line "
                     f"{line_number}: ({self.paper_id(paper)}, {self.reviewer_id(reviewer)})"
                 )
-            score = _number(row["score"], "score", similarity_scores_file, line_number)
             self.s[paper][reviewer] = score
             self.remained_r_for_p[paper].append(reviewer)
             self.remained_p_for_r[reviewer].append(paper)
 
     def _finalize_bad_papers_and_reviewers(self):
         for paper in range(self.np):
-            if not any(score > 0 for score in self.s[paper].values()):
+            if not self.s[paper]:
                 self.bad_papers_list.append(paper)
 
         for reviewer in range(self.nr):
-            if not any(
-                self.s[paper][reviewer] > 0 for paper in self.remained_p_for_r[reviewer]
-            ):
+            if not self.remained_p_for_r[reviewer]:
                 self.reviewers_with_no_similarity_scores.append(reviewer)
 
         self.zero_capacity_reviewer_mask = [False for _ in range(self.nr)]
