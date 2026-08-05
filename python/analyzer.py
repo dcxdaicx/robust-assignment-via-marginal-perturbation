@@ -1,15 +1,69 @@
 from collections import Counter, defaultdict
 from contextlib import redirect_stdout
 import logging
+from math import log, sqrt
 from pathlib import Path
 from statistics import mean, pstdev
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 
-from . import metrics
-
 logger = logging.getLogger(__name__)
+EPSILON = 1e-8
+
+
+def _candidate_probabilities(probability_matrix):
+    for probabilities in probability_matrix:
+        yield from probabilities.values()
+
+
+def _quality(instance, probability_matrix, matching_pairs):
+    probability_quality = sum(
+        probability * instance.s[paper][reviewer]
+        for paper, probabilities in enumerate(probability_matrix)
+        for reviewer, probability in probabilities.items()
+    )
+    matching_quality = sum(
+        instance.s[paper][reviewer] for paper, reviewer in matching_pairs
+    )
+    return probability_quality, matching_quality
+
+
+def _max_probability(probability_matrix):
+    return max(_candidate_probabilities(probability_matrix), default=0.0)
+
+
+def _average_paper_max_probability(instance, probability_matrix):
+    paper_maxima = [
+        max(probabilities.values(), default=0.0)
+        for probabilities in probability_matrix
+    ]
+    return sum(paper_maxima) / instance.np
+
+
+def _support_size(probability_matrix):
+    return sum(
+        probability > EPSILON
+        for probability in _candidate_probabilities(probability_matrix)
+    )
+
+
+def _entropy(probability_matrix):
+    value = -sum(
+        probability * log(probability)
+        for probability in _candidate_probabilities(probability_matrix)
+        if probability > EPSILON
+    )
+    return 0.0 if value == 0 else value
+
+
+def _l2_norm(probability_matrix):
+    return sqrt(
+        sum(
+            probability**2
+            for probability in _candidate_probabilities(probability_matrix)
+        )
+    )
 
 
 def _coauthor_pair_counts(instance, matching_reviewers_by_paper):
@@ -77,14 +131,16 @@ def _cycle_counts(edge_counts):
 def analyze(instance, prob_assignment_matrix, matching_pairs, final=True):
     statistics = SimpleNamespace()
 
-    statistics.prob_quality, statistics.matching_quality = metrics.quality(
+    statistics.prob_quality, statistics.matching_quality = _quality(
         instance, prob_assignment_matrix, matching_pairs
     )
-    statistics.max_prob = metrics.maxprob(instance, prob_assignment_matrix)
-    statistics.avg_max_prob = metrics.avgmaxprob(instance, prob_assignment_matrix)
-    statistics.support_size = metrics.supportsize(instance, prob_assignment_matrix)
-    statistics.entropy = metrics.entropy(instance, prob_assignment_matrix)
-    statistics.l2norm_loss = metrics.l2normloss(instance, prob_assignment_matrix)
+    statistics.max_prob = _max_probability(prob_assignment_matrix)
+    statistics.avg_max_prob = _average_paper_max_probability(
+        instance, prob_assignment_matrix
+    )
+    statistics.support_size = _support_size(prob_assignment_matrix)
+    statistics.entropy = _entropy(prob_assignment_matrix)
+    statistics.l2norm_loss = _l2_norm(prob_assignment_matrix)
 
     if not final:
         return statistics
